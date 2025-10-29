@@ -8,27 +8,140 @@ format: typst
 ## **Part 0: libraries**
 
 ```{r}
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(sf)
+library(maps)
 
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question: How does EV registration vary state by state? What is the relationship between average energy price and ev registration? What is the most common type of renewable energy across states in 2023?
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+av_energy_price_2023 <- read.csv("/Users/jayson/Documents/stat133/project-4/ev-power-jayson-abarca/data/av-energy-price-2021-2023.csv")
+ev_reg_2023 <- read.csv("/Users/jayson/Documents/stat133/project-4/ev-power-jayson-abarca/data/ev-registrations-by-state-2023.csv")
+renewable_2023 <- read.csv("/Users/jayson/Documents/stat133/project-4/ev-power-jayson-abarca/data/renew-use-2023.csv")
 
+#Data cleaning for 2023 EV Registration 
+ev_reg_2023 <- ev_reg_2023 %>%
+  rename(State = `electric.vehicle.registrations_by_state..2023.`) %>%
+  mutate(
+    State = toupper(State),
+    State = state.abb[match(State, toupper(state.name))]
+  )
+
+
+ev_reg_2023 <- ev_reg_2023 %>%
+  mutate(
+    X = str_remove_all(X, "\\D"), 
+    X = as.integer(X)
+  )
+
+#Data Cleaning for average price
+colnames(av_energy_price_2023)[1] <- "energy_price_raw"
+
+av_energy_price_2023 <- av_energy_price_2023 %>%
+  separate(
+    col = energy_price_raw,
+    into = c("State", "price_2021", "price_2022", "price_2023"),
+    sep = ",",
+    fill = "right"
+  )
+
+av_energy_price_2023 <- av_energy_price_2023 %>%
+  mutate(
+    across(
+      .cols = c(price_2021, price_2022, price_2023),
+      .fns = ~ .x |>
+        str_remove_all("\\$|USD|per MMBtu|est\\.|≈|about") |>
+        str_trim() |>
+        str_extract("\\d+\\.?\\d*") |>
+        as.numeric()
+    )
+  )
+
+#Data Cleaning for renewable energy 2023
+renewable_2023 <- renewable_2023 %>%
+  mutate(State = str_to_upper(State))
+
+renewable_2023 <- renewable_2023 %>%
+  mutate(
+    Renewable_Use_2023 = str_replace_all(Renewable_Use_2023, "[^0-9]", ""),
+    Renewable_Use_2023 = as.integer(Renewable_Use_2023)
+  ) %>%
+  arrange(State)
+
+renewable_sorted <- renewable_2023 %>%
+  group_by(State) %>%
+  arrange(desc(Renewable_Use_2023), .by_group = TRUE) %>%
+  ungroup()
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
 ```{r}
+# Merge EV + price
+ev_power <- ev_reg_2023 %>%
+  inner_join(av_energy_price_2023, by = "State")
 
+# Get most common renewable source by state
+renewable_top <- renewable_sorted %>%
+  group_by(State) %>%
+  slice_max(Renewable_Use_2023, n = 1) %>%
+  ungroup()
+
+# Final master dataset
+ev_full <- ev_power %>%
+  left_join(renewable_top, by = "State") %>%
+  mutate(
+    EV_to_Renewable_Ratio = X / Renewable_Use_2023,
+    Price_Change_2021_2023 = price_2023 - price_2021
+  )
 ```
 
 ## **Part 4: Mapping Visualization**
 
-```{r}
+```{r, dev="png"}
+library(ggplot2)
+library(dplyr)
+library(sf)
+library(maps)
 
+# convert built-in state map into sf object
+states_sf <- st_as_sf(map("state", plot = FALSE, fill = TRUE))
+
+# `map("state")` uses lowercase full state names
+# convert those to state abbreviations
+states_sf <- states_sf %>%
+  mutate(State = state.abb[match(tolower(ID), tolower(state.name))])
+
+# join with your merged dataset (ev_full must already exist)
+states_merged <- states_sf %>%
+  left_join(ev_full, by = "State")
+
+# choropleth map of EV registrations
+ggplot(states_merged) +
+  geom_sf(aes(fill = X), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "plasma",
+    labels = scales::comma,
+    name = "EV Registrations"
+  ) +
+  labs(
+    title = "EV Registrations by State (2023)",
+    subtitle = "EV adoption is highest in coastal and urbanized states",
+    caption = "Source: DOE EV dataset (2023)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 18, face = "bold"),
+    legend.position = "right"
+  )
 ```
